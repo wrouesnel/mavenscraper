@@ -5,10 +5,12 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/dustin/go-humanize"
 	"github.com/wrouesnel/mavenscraper/pkg/mavenrepo"
 	"go.uber.org/zap"
 	"gopkg.in/alecthomas/kingpin.v2"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +20,7 @@ import (
 func main() {
 	appConfig := struct{
 		mavenURL *url.URL
+		archetype *os.File
 
 		logLevel string
 		logTarget string
@@ -31,6 +34,8 @@ func main() {
 	app.Flag("log.format", "Log level").Default("console").EnumVar(&appConfig.logFormat, "console", "json")
 
 	app.Flag("maven.repo", "Maven repository to analyze").Default("https://repo.maven.apache.org/maven2").URLVar(&appConfig.mavenURL)
+
+	app.Arg("archetype-file", "Optional: file to load archetypes from, skip download").OpenFileVar(&appConfig.archetype, os.O_RDONLY, os.FileMode(0777))
 
 	_ = kingpin.MustParse(app.Parse(os.Args[1:]))
 
@@ -51,36 +56,44 @@ func main() {
 
 	log.Debug("Application logging ready")
 
-	archetypeURL, _ := url.Parse(appConfig.mavenURL.String())
-	archetypeURL.Path = strings.Join(append(strings.Split(archetypeURL.Path, "/"),"archetype-catalog.xml"),"/")
+	var archetypesXml io.ReadCloser
 
-	log.Info("Downloading archetype-catalog.xml", zap.String("url", archetypeURL.String()))
+	if appConfig.archetype != nil {
+		archetypesXml = appConfig.archetype
+	} else {
+		archetypeURL, _ := url.Parse(appConfig.mavenURL.String())
+		archetypeURL.Path = strings.Join(append(strings.Split(archetypeURL.Path, "/"), "archetype-catalog.xml"), "/")
 
-	resp, err := http.Head(archetypeURL.String())
-	if err != nil {
-		log.Fatal("HTTP request failed", zap.Error(err))
+		log.Info("Downloading archetype-catalog.xml", zap.String("url", archetypeURL.String()))
+
+		resp, err := http.Head(archetypeURL.String())
+		if err != nil {
+			log.Fatal("HTTP request failed", zap.Error(err))
+		}
+
+		log.Info(fmt.Sprintf("archetype-catalog.xml is %v", humanize.Bytes(uint64(resp.ContentLength))))
+		resp.Body.Close()
+
+		resp, err = http.Get(archetypeURL.String())
+		if err != nil {
+			log.Fatal("HTTP request failed", zap.Error(err))
+		}
+		defer resp.Body.Close()
+		// Decode the body as an archetype
+		archetypesXml = resp.Body
 	}
 
-	log.Info(fmt.Sprintf("archetype-catalog.xml is %v", humanize.Bytes(uint64(resp.ContentLength))))
-	resp.Body.Close()
 
-	resp, err = http.Get(archetypeURL.String())
-	if err != nil {
-		log.Fatal("HTTP request failed", zap.Error(err))
-	}
-	defer resp.Body.Close()
-	// Decode the body as an archetype
-	decoder := xml.NewDecoder(resp.Body)
+	decoder := xml.NewDecoder(archetypesXml)
 
-	catalog := &mavenrepo.ArchetypeCatalogRoot{}
+	catalog := &mavenrepo.ArchetypeCatalog{}
 
 	if err := decoder.Decode(catalog); err != nil {
 		log.Fatal("Failed to decode archetype catalog", zap.Error(err))
 	}
+	log.Info(fmt.Sprintf("Got %v archetypes", len(catalog.Archetypes)))
 
-	log.Info(fmt.Sprintf("Got %v archetypes", len(catalog.ArchetypeCatalog.Archetypes)))
-
-	for
+	spew.Dump(catalog)
 
 	os.Exit(0)
 }
